@@ -129,12 +129,12 @@ def generate_audio(text, voice_id, voice_settings):
     if not t:
         return None
 
-    url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}?output_format=pcm_44100"
+    # ✅ FIXED — request proper WAV output
+    url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}?output_format=wav_44100"
 
     headers = {
         "xi-api-key": API_KEY,
-        "Content-Type": "application/json",
-        "Accept": "audio/wav"
+        "Content-Type": "application/json"
     }
 
     data = {
@@ -156,12 +156,8 @@ def generate_audio(text, voice_id, voice_settings):
         st.error(f"API Error {response.status_code}: {response.text}")
         return None
 
-    audio = AudioSegment(
-        data=response.content,
-        sample_width=2,
-        frame_rate=44100,
-        channels=1
-    )
+    # ✅ FIXED — load WAV properly
+    audio = AudioSegment.from_file(io.BytesIO(response.content), format="wav")
 
     audio = audio.fade_in(CLIP_FADE_IN_MS).fade_out(CLIP_FADE_OUT_MS)
     audio += AudioSegment.silent(duration=CLIP_TAIL_PAD_MS)
@@ -249,12 +245,13 @@ if uploaded_file:
                     if len(final_audio) == 0:
                         final_audio = audio
                     else:
-                        final_audio = final_audio.append(audio, crossfade=CROSSFADE_MS)
+                        # ✅ GAP BEFORE adding new line
+                        if prev_speaker == speaker:
+                            final_audio += AudioSegment.silent(duration=GAP_SAME_SPEAKER_MS)
+                        else:
+                            final_audio += AudioSegment.silent(duration=GAP_SPEAKER_CHANGE_MS)
 
-                    if prev_speaker == speaker:
-                        final_audio += AudioSegment.silent(duration=GAP_SAME_SPEAKER_MS)
-                    else:
-                        final_audio += AudioSegment.silent(duration=GAP_SPEAKER_CHANGE_MS)
+                        final_audio = final_audio.append(audio, crossfade=CROSSFADE_MS)
 
                     prev_speaker = speaker
 
@@ -274,5 +271,4 @@ if uploaded_file:
             data=wav_io,
             file_name="vobble_episode.wav",
             mime="audio/wav"
-
         )
