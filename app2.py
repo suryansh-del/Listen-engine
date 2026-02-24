@@ -5,14 +5,30 @@ import io
 import wave
 from datetime import datetime
 
-# ---------------- LOGIN SYSTEM ---------------- #
+# =============================
+# SESSION INITIALIZATION
+# =============================
+
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
+
+if "username" not in st.session_state:
+    st.session_state.username = ""
+
+if "api_key" not in st.session_state:
+    st.session_state.api_key = ""
+
+# =============================
+# LOGIN SYSTEM
+# =============================
 
 USERS = {
     "Tejas": "Vobble123",
     "Suryansh": "Vobble123"
 }
 
-def login():
+if not st.session_state.logged_in:
+
     st.title("🎙️ Listen Engine Login")
 
     username = st.text_input("Username")
@@ -22,26 +38,22 @@ def login():
         if username in USERS and USERS[username] == password:
             st.session_state.logged_in = True
             st.session_state.username = username
+            st.rerun()
         else:
             st.error("Invalid credentials")
 
-if "logged_in" not in st.session_state:
-    st.session_state.logged_in = False
-
-if not st.session_state.logged_in:
-    login()
     st.stop()
 
-# ---------------- MAIN APP ---------------- #
+# =============================
+# MAIN APP
+# =============================
 
 st.title("🎧 Listen Engine – Script to Audio")
-
 st.success(f"Logged in as {st.session_state.username}")
 
-# -------- Ask for ElevenLabs API Key -------- #
-
-if "api_key" not in st.session_state:
-    st.session_state.api_key = ""
+# =============================
+# API KEY INPUT
+# =============================
 
 st.session_state.api_key = st.text_input(
     "Enter ElevenLabs API Key",
@@ -51,14 +63,15 @@ st.session_state.api_key = st.text_input(
 
 API_KEY = st.session_state.api_key.strip()
 
-# -------- Upload Script -------- #
+# =============================
+# SCRIPT UPLOAD
+# =============================
 
 uploaded_file = st.file_uploader("Upload Script (.txt)", type=["txt"])
 
 def detect_characters(script_text):
     pattern = r"^([A-Za-z0-9 _-]+):"
-    characters = set(re.findall(pattern, script_text, re.MULTILINE))
-    return sorted(list(characters))
+    return sorted(set(re.findall(pattern, script_text, re.MULTILINE)))
 
 def parse_script(script_text):
     lines = script_text.split("\n")
@@ -91,11 +104,7 @@ def generate_audio(text, voice_id):
         "model_id": "eleven_multilingual_v2"
     }
 
-    response = requests.post(
-        url,
-        headers=headers,
-        json=payload
-    )
+    response = requests.post(url, headers=headers, json=payload)
 
     if response.status_code != 200:
         st.error(f"API Error {response.status_code}: {response.text}")
@@ -125,7 +134,9 @@ def combine_wav_files(wav_files):
     output_buffer.seek(0)
     return output_buffer
 
-# -------- If Script Uploaded -------- #
+# =============================
+# CHARACTER SETUP
+# =============================
 
 if uploaded_file:
 
@@ -140,13 +151,13 @@ if uploaded_file:
         st.markdown(f"### {char}")
 
         gender = st.selectbox(
-            f"Select Gender for {char}",
+            f"Gender for {char}",
             ["Adult Male", "Adult Female", "Male Kid", "Female Kid"],
             key=f"{char}_gender"
         )
 
         voice_id = st.text_input(
-            f"Enter ElevenLabs Voice ID for {char}",
+            f"Voice ID for {char}",
             key=f"{char}_voice"
         )
 
@@ -158,7 +169,6 @@ if uploaded_file:
     if st.button("Generate Episode"):
 
         parsed_lines = parse_script(script_text)
-
         wav_segments = []
 
         for character, dialogue in parsed_lines:
@@ -171,6 +181,7 @@ if uploaded_file:
                 wav_segments.append(audio_data)
 
         if wav_segments:
+
             combined_audio = combine_wav_files(wav_segments)
 
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
