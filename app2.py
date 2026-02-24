@@ -41,9 +41,9 @@ MODEL_ID = "eleven_v3"
 RETRIES = 3
 TIMEOUT_SEC = 30
 
-CROSSFADE_MS = 40
-GAP_SAME_SPEAKER_MS = 120
-GAP_SPEAKER_CHANGE_MS = 250
+CROSSFADE_MS = 0
+GAP_SAME_SPEAKER_MS = 400
+GAP_SPEAKER_CHANGE_MS = 800
 
 CLIP_FADE_IN_MS = 20
 CLIP_FADE_OUT_MS = 40
@@ -274,4 +274,5 @@ if uploaded_file:
             data=wav_io,
             file_name="vobble_episode.wav",
             mime="audio/wav"
+
         )
