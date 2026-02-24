@@ -1,118 +1,135 @@
 import streamlit as st
 import requests
 import re
-import tempfile
-import subprocess
-import os
 import io
-from datetime import datetime
+from pydub import AudioSegment
 
-# ==============================
-# SESSION INIT
-# ==============================
-
-if "logged_in" not in st.session_state:
-    st.session_state.logged_in = False
-
-if "username" not in st.session_state:
-    st.session_state.username = ""
-
-if "api_key" not in st.session_state:
-    st.session_state.api_key = ""
-
-# ==============================
-# LOGIN
-# ==============================
+# =============================
+# LOGIN SYSTEM
+# =============================
 
 USERS = {
     "Tejas": "Vobble123",
     "Suryansh": "Vobble123"
 }
 
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
+
 if not st.session_state.logged_in:
+    st.title("🎙 Vobble Audio Studio Login")
 
-    st.title("🎙️ Listen Engine Login")
-
-    username = st.text_input("Username")
+    username = st.text_input("Name")
     password = st.text_input("Password", type="password")
 
     if st.button("Login"):
         if username in USERS and USERS[username] == password:
             st.session_state.logged_in = True
-            st.session_state.username = username
             st.rerun()
         else:
             st.error("Invalid credentials")
 
     st.stop()
 
-# ==============================
-# MAIN UI
-# ==============================
+# =============================
+# CONFIG
+# =============================
 
-st.title("🎧 Listen Engine – Production Build")
-st.success(f"Logged in as {st.session_state.username}")
+API_KEY = st.secrets["API_KEY"]
+MODEL_ID = "eleven_v3"
 
-# ==============================
-# API KEY INPUT
-# ==============================
+RETRIES = 3
+TIMEOUT_SEC = 30
 
-st.session_state.api_key = st.text_input(
-    "Enter ElevenLabs API Key",
-    type="password",
-    value=st.session_state.api_key
-)
+CROSSFADE_MS = 0
+GAP_SAME_SPEAKER_MS = 400
+GAP_SPEAKER_CHANGE_MS = 800
 
-API_KEY = st.session_state.api_key.strip()
+CLIP_FADE_IN_MS = 20
+CLIP_FADE_OUT_MS = 40
+CLIP_TAIL_PAD_MS = 120
 
-# ==============================
-# GLOBAL VOICE SETTINGS
-# ==============================
+# =============================
+# VOICE TYPE PROFILES
+# =============================
 
-st.subheader("Global Voice Settings")
+VOICE_TYPE_PROFILES = {
+    "adult_male": {
+        "stability": 0.50,
+        "similarity_boost": 0.88,
+        "style": 0.75,
+        "use_speaker_boost": True
+    },
+    "adult_female": {
+        "stability": 0.5,
+        "similarity_boost": 0.90,
+        "style": 0.80,
+        "use_speaker_boost": True
+    },
+    "male_kid": {
+        "stability": 0.5,
+        "similarity_boost": 0.80,
+        "style": 0.90,
+        "use_speaker_boost": True
+    },
+    "female_kid": {
+        "stability": 0.5,
+        "similarity_boost": 0.78,
+        "style": 0.95,
+        "use_speaker_boost": False
+    }
+}
 
-stability = st.selectbox("Stability", [0.0, 0.5, 1.0], index=1)
-similarity_boost = st.slider("Similarity Boost", 0.0, 1.0, 0.75)
-silence_gap = st.slider("Silence Between Dialogues (seconds)", 0.0, 2.0, 0.4)
+# =============================
+# UTILITIES
+# =============================
 
-# ==============================
-# SCRIPT UPLOAD
-# ==============================
-
-uploaded_file = st.file_uploader("Upload Script (.txt)", type=["txt"])
-
-# ==============================
-# SCRIPT PARSING
-# ==============================
+def normalize_name(name):
+    return name.strip().lower()
 
 def detect_characters(script_text):
-    pattern = r"^([A-Za-z0-9 _-]+):"
-    return sorted(set(re.findall(pattern, script_text, re.MULTILINE)))
-
-def parse_script(script_text):
+    characters = set()
     lines = script_text.split("\n")
-    parsed = []
 
     for line in lines:
-        match = re.match(r"^([A-Za-z0-9 _-]+):(.*)", line)
-        if match:
-            character = match.group(1).strip()
-            dialogue = match.group(2).strip()
-            if dialogue:
-                parsed.append((character, dialogue))
+        line = line.strip()
+        if ":" in line:
+            speaker = line.split(":", 1)[0].strip()
+            if speaker:
+                characters.add(normalize_name(speaker))
 
-    return parsed
+    return sorted(list(characters))
 
-# ==============================
-# ELEVENLABS AUDIO GEN
-# ==============================
+ALLOWED_PAUSE_TAGS = {"[pause]", "[short pause]", "[long pause]"}
 
-def generate_audio(text, voice_id):
+def strip_unknown_brackets(s):
+    def repl(m):
+        tag = m.group(0).strip().lower()
+        return m.group(0) if tag in ALLOWED_PAUSE_TAGS else ""
+    return re.sub(r"\[[^\]]+\]", repl, s).strip()
 
-    if not API_KEY:
-        st.error("Please enter ElevenLabs API key.")
+def ensure_line_tail(text):
+    t = strip_unknown_brackets(text.strip())
+    if not t:
+        return t
+
+    if not re.search(r"(\[short pause\]|\[pause\]|\[long pause\])\s*$", t):
+        if not t.endswith((".", "!", "?", ",")):
+            t += "."
+        t += " [short pause]"
+
+    return t
+
+# =============================
+# AUDIO GENERATION
+# =============================
+
+def generate_audio(text, voice_id, voice_settings):
+    t = ensure_line_tail(text)
+    if not t:
         return None
 
+    # ✅ FIXED — request proper WAV output
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}?output_format=wav_44100"
 
     headers = {
@@ -120,137 +137,138 @@ def generate_audio(text, voice_id):
         "Content-Type": "application/json"
     }
 
-    payload = {
-        "text": text,
-        "model_id": "eleven_multilingual_v2",
-        "voice_settings": {
-            "stability": stability,
-            "similarity_boost": similarity_boost
-        }
+    data = {
+        "text": t,
+        "model_id": MODEL_ID,
+        "voice_settings": voice_settings
     }
 
-    response = requests.post(url, headers=headers, json=payload)
+    for attempt in range(RETRIES):
+        try:
+            response = requests.post(url, json=data, headers=headers, timeout=TIMEOUT_SEC)
+            break
+        except requests.exceptions.RequestException:
+            continue
+    else:
+        return None
 
     if response.status_code != 200:
         st.error(f"API Error {response.status_code}: {response.text}")
         return None
 
-    return response.content
+    # ✅ FIXED — load WAV properly
+    audio = AudioSegment.from_file(io.BytesIO(response.content), format="wav")
 
-# ==============================
-# FFMPEG CONCAT
-# ==============================
+    audio = audio.fade_in(CLIP_FADE_IN_MS).fade_out(CLIP_FADE_OUT_MS)
+    audio += AudioSegment.silent(duration=CLIP_TAIL_PAD_MS)
 
-def combine_with_ffmpeg(wav_segments):
+    return audio
 
-    temp_files = []
+# =============================
+# UI
+# =============================
 
-    # Save segments
-    for segment in wav_segments:
-        temp = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
-        temp.write(segment)
-        temp.close()
-        temp_files.append(temp.name)
+st.title("🎙 Vobble Audio Studio")
 
-    # Create concat list
-    list_file = tempfile.NamedTemporaryFile(delete=False, mode='w', suffix=".txt")
-    for file in temp_files:
-        list_file.write(f"file '{file}'\n")
-    list_file.close()
-
-    output_file = tempfile.NamedTemporaryFile(delete=False, suffix=".wav").name
-
-    command = [
-        "ffmpeg",
-        "-f", "concat",
-        "-safe", "0",
-        "-i", list_file.name,
-        "-c:a", "pcm_s16le",
-        output_file
-    ]
-
-    subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-
-    with open(output_file, "rb") as f:
-        final_audio = f.read()
-
-    # Cleanup
-    for file in temp_files:
-        os.remove(file)
-    os.remove(list_file.name)
-    os.remove(output_file)
-
-    return io.BytesIO(final_audio)
-
-# ==============================
-# CHARACTER SETUP
-# ==============================
+uploaded_file = st.file_uploader("Upload Script (.txt)", type=["txt"])
 
 if uploaded_file:
 
     script_text = uploaded_file.read().decode("utf-8")
     characters = detect_characters(script_text)
 
-    st.subheader("Detected Characters")
+    if not characters:
+        st.warning("No characters detected. Use format: Name: dialogue")
+        st.stop()
 
-    character_settings = {}
+    st.subheader("🎭 Character Setup")
 
-    for char in characters:
-        st.markdown(f"### {char}")
+    voice_map = {}
+    voice_profiles = {}
+
+    for character in characters:
+        st.markdown(f"### {character}")
 
         voice_id = st.text_input(
-            f"Voice ID for {char}",
-            key=f"{char}_voice"
+            f"Voice ID for {character}",
+            key=f"{character}_voice"
         )
 
-        character_settings[char] = voice_id
+        voice_type = st.selectbox(
+            f"Voice Type for {character}",
+            ["adult_male", "adult_female", "male_kid", "female_kid"],
+            key=f"{character}_type"
+        )
 
-    if st.button("Generate Episode"):
+        if voice_id:
+            voice_map[character] = voice_id
+            voice_profiles[character] = VOICE_TYPE_PROFILES[voice_type]
 
-        parsed_lines = parse_script(script_text)
-        wav_segments = []
+    if st.button("🎬 Generate Episode"):
 
-        for character, dialogue in parsed_lines:
+        if len(voice_map) != len(characters):
+            st.error("Please assign Voice ID for all characters.")
+            st.stop()
 
-            voice_id = character_settings.get(character)
+        final_audio = AudioSegment.empty()
+        prev_speaker = None
 
-            if not voice_id:
-                st.error(f"No voice ID set for {character}")
-                st.stop()
+        lines = script_text.split("\n")
 
-            audio_data = generate_audio(dialogue, voice_id)
+        progress = st.progress(0)
+        total_lines = len(lines)
+        processed = 0
 
-            if audio_data:
-                wav_segments.append(audio_data)
+        for raw in lines:
+            line = raw.strip()
+            processed += 1
+            progress.progress(processed / total_lines)
 
-                # Add silence gap
-                if silence_gap > 0:
-                    silence_file = tempfile.NamedTemporaryFile(delete=False, suffix=".wav").name
-                    subprocess.run([
-                        "ffmpeg",
-                        "-f", "lavfi",
-                        "-i", f"anullsrc=r=44100:cl=mono",
-                        "-t", str(silence_gap),
-                        "-acodec", "pcm_s16le",
-                        silence_file
-                    ], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            if not line:
+                continue
 
-                    with open(silence_file, "rb") as f:
-                        wav_segments.append(f.read())
+            if ":" in line:
+                speaker_part, dialogue = line.split(":", 1)
+                speaker = normalize_name(speaker_part)
+                dialogue = dialogue.strip()
 
-                    os.remove(silence_file)
+                if speaker not in voice_map:
+                    continue
 
-        if wav_segments:
+                audio = generate_audio(
+                    dialogue,
+                    voice_map[speaker],
+                    voice_profiles[speaker]
+                )
 
-            final_audio = combine_with_ffmpeg(wav_segments)
+                if audio:
+                    if len(final_audio) == 0:
+                        final_audio = audio
+                    else:
+                        # ✅ GAP BEFORE adding new line
+                        if prev_speaker == speaker:
+                            final_audio += AudioSegment.silent(duration=GAP_SAME_SPEAKER_MS)
+                        else:
+                            final_audio += AudioSegment.silent(duration=GAP_SPEAKER_CHANGE_MS)
 
-            filename = f"episode_{datetime.now().strftime('%Y%m%d_%H%M%S')}.wav"
+                        final_audio = final_audio.append(audio, crossfade=CROSSFADE_MS)
 
-            st.download_button(
-                "Download Episode",
-                data=final_audio,
-                file_name=filename,
-                mime="audio/wav"
-            )
+                    prev_speaker = speaker
 
-            st.success("🎉 Episode generated successfully!")
+        wav_io = io.BytesIO()
+        final_audio.export(
+            wav_io,
+            format="wav",
+            parameters=["-acodec", "pcm_s16le"]
+        )
+
+        wav_io.seek(0)
+
+        st.success("✅ Episode Generated Successfully!")
+
+        st.download_button(
+            label="⬇ Download Episode",
+            data=wav_io,
+            file_name="vobble_episode.wav",
+            mime="audio/wav"
+        )
