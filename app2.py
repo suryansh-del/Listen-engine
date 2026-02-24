@@ -2,7 +2,8 @@ import streamlit as st
 import requests
 import re
 import io
-from pydub import AudioSegment
+import wave
+import struct
 
 # =============================
 # LOGIN SYSTEM
@@ -38,47 +39,8 @@ if not st.session_state.logged_in:
 API_KEY = st.secrets["API_KEY"]
 MODEL_ID = "eleven_v3"
 
-RETRIES = 3
-TIMEOUT_SEC = 30
-
-CROSSFADE_MS = 0
 GAP_SAME_SPEAKER_MS = 400
 GAP_SPEAKER_CHANGE_MS = 800
-
-CLIP_FADE_IN_MS = 20
-CLIP_FADE_OUT_MS = 40
-CLIP_TAIL_PAD_MS = 120
-
-# =============================
-# VOICE TYPE PROFILES
-# =============================
-
-VOICE_TYPE_PROFILES = {
-    "adult_male": {
-        "stability": 0.50,
-        "similarity_boost": 0.88,
-        "style": 0.75,
-        "use_speaker_boost": True
-    },
-    "adult_female": {
-        "stability": 0.5,
-        "similarity_boost": 0.90,
-        "style": 0.80,
-        "use_speaker_boost": True
-    },
-    "male_kid": {
-        "stability": 0.5,
-        "similarity_boost": 0.80,
-        "style": 0.90,
-        "use_speaker_boost": True
-    },
-    "female_kid": {
-        "stability": 0.5,
-        "similarity_boost": 0.78,
-        "style": 0.95,
-        "use_speaker_boost": False
-    }
-}
 
 # =============================
 # UTILITIES
@@ -90,46 +52,14 @@ def normalize_name(name):
 def detect_characters(script_text):
     characters = set()
     lines = script_text.split("\n")
-
     for line in lines:
-        line = line.strip()
         if ":" in line:
             speaker = line.split(":", 1)[0].strip()
             if speaker:
                 characters.add(normalize_name(speaker))
-
     return sorted(list(characters))
 
-ALLOWED_PAUSE_TAGS = {"[pause]", "[short pause]", "[long pause]"}
-
-def strip_unknown_brackets(s):
-    def repl(m):
-        tag = m.group(0).strip().lower()
-        return m.group(0) if tag in ALLOWED_PAUSE_TAGS else ""
-    return re.sub(r"\[[^\]]+\]", repl, s).strip()
-
-def ensure_line_tail(text):
-    t = strip_unknown_brackets(text.strip())
-    if not t:
-        return t
-
-    if not re.search(r"(\[short pause\]|\[pause\]|\[long pause\])\s*$", t):
-        if not t.endswith((".", "!", "?", ",")):
-            t += "."
-        t += " [short pause]"
-
-    return t
-
-# =============================
-# AUDIO GENERATION
-# =============================
-
 def generate_audio(text, voice_id, voice_settings):
-    t = ensure_line_tail(text)
-    if not t:
-        return None
-
-    # ✅ FIXED — request proper WAV output
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}?output_format=wav_44100"
 
     headers = {
@@ -138,31 +68,25 @@ def generate_audio(text, voice_id, voice_settings):
     }
 
     data = {
-        "text": t,
+        "text": text,
         "model_id": MODEL_ID,
         "voice_settings": voice_settings
     }
 
-    for attempt in range(RETRIES):
-        try:
-            response = requests.post(url, json=data, headers=headers, timeout=TIMEOUT_SEC)
-            break
-        except requests.exceptions.RequestException:
-            continue
-    else:
-        return None
+    response = requests.post(url, json=data)
 
     if response.status_code != 200:
         st.error(f"API Error {response.status_code}: {response.text}")
         return None
 
-    # ✅ FIXED — load WAV properly
-    audio = AudioSegment.from_file(io.BytesIO(response.content), format="wav")
+    return response.content
 
-    audio = audio.fade_in(CLIP_FADE_IN_MS).fade_out(CLIP_FADE_OUT_MS)
-    audio += AudioSegment.silent(duration=CLIP_TAIL_PAD_MS)
-
-    return audio
+def create_silence(duration_ms, params):
+    frame_rate, sampwidth, channels = params
+    num_frames = int(frame_rate * duration_ms / 1000)
+    silence_frame = struct.pack("<h", 0)
+    silence = silence_frame * channels * num_frames
+    return silence
 
 # =============================
 # UI
@@ -178,97 +102,97 @@ if uploaded_file:
     characters = detect_characters(script_text)
 
     if not characters:
-        st.warning("No characters detected. Use format: Name: dialogue")
+        st.warning("Use format: Name: dialogue")
         st.stop()
 
     st.subheader("🎭 Character Setup")
 
     voice_map = {}
-    voice_profiles = {}
 
     for character in characters:
         st.markdown(f"### {character}")
-
-        voice_id = st.text_input(
-            f"Voice ID for {character}",
-            key=f"{character}_voice"
-        )
-
-        voice_type = st.selectbox(
-            f"Voice Type for {character}",
-            ["adult_male", "adult_female", "male_kid", "female_kid"],
-            key=f"{character}_type"
-        )
-
+        voice_id = st.text_input(f"Voice ID for {character}", key=character)
         if voice_id:
             voice_map[character] = voice_id
-            voice_profiles[character] = VOICE_TYPE_PROFILES[voice_type]
 
     if st.button("🎬 Generate Episode"):
 
         if len(voice_map) != len(characters):
-            st.error("Please assign Voice ID for all characters.")
+            st.error("Assign Voice ID for all characters.")
             st.stop()
-
-        final_audio = AudioSegment.empty()
-        prev_speaker = None
 
         lines = script_text.split("\n")
 
-        progress = st.progress(0)
-        total_lines = len(lines)
-        processed = 0
+        wav_segments = []
+        prev_speaker = None
+        audio_params = None
 
         for raw in lines:
             line = raw.strip()
-            processed += 1
-            progress.progress(processed / total_lines)
-
-            if not line:
+            if not line or ":" not in line:
                 continue
 
-            if ":" in line:
-                speaker_part, dialogue = line.split(":", 1)
-                speaker = normalize_name(speaker_part)
-                dialogue = dialogue.strip()
+            speaker_part, dialogue = line.split(":", 1)
+            speaker = normalize_name(speaker_part)
+            dialogue = dialogue.strip()
 
-                if speaker not in voice_map:
-                    continue
+            if speaker not in voice_map:
+                continue
 
-                audio = generate_audio(
-                    dialogue,
-                    voice_map[speaker],
-                    voice_profiles[speaker]
+            audio_bytes = generate_audio(
+                dialogue,
+                voice_map[speaker],
+                {
+                    "stability": 0.5,
+                    "similarity_boost": 0.85
+                }
+            )
+
+            if not audio_bytes:
+                continue
+
+            wav_file = wave.open(io.BytesIO(audio_bytes), "rb")
+
+            if audio_params is None:
+                audio_params = (
+                    wav_file.getframerate(),
+                    wav_file.getsampwidth(),
+                    wav_file.getnchannels()
                 )
 
-                if audio:
-                    if len(final_audio) == 0:
-                        final_audio = audio
+            frames = wav_file.readframes(wav_file.getnframes())
+            wav_segments.append((speaker, frames))
+
+        if not wav_segments:
+            st.error("No audio generated.")
+            st.stop()
+
+        output = io.BytesIO()
+
+        with wave.open(output, "wb") as out:
+            out.setnchannels(audio_params[2])
+            out.setsampwidth(audio_params[1])
+            out.setframerate(audio_params[0])
+
+            for i, (speaker, frames) in enumerate(wav_segments):
+
+                if i > 0:
+                    prev_speaker = wav_segments[i - 1][0]
+                    if prev_speaker == speaker:
+                        silence = create_silence(GAP_SAME_SPEAKER_MS, audio_params)
                     else:
-                        # ✅ GAP BEFORE adding new line
-                        if prev_speaker == speaker:
-                            final_audio += AudioSegment.silent(duration=GAP_SAME_SPEAKER_MS)
-                        else:
-                            final_audio += AudioSegment.silent(duration=GAP_SPEAKER_CHANGE_MS)
+                        silence = create_silence(GAP_SPEAKER_CHANGE_MS, audio_params)
+                    out.writeframes(silence)
 
-                        final_audio = final_audio.append(audio, crossfade=CROSSFADE_MS)
+                out.writeframes(frames)
 
-                    prev_speaker = speaker
-
-        wav_io = io.BytesIO()
-        final_audio.export(
-            wav_io,
-            format="wav",
-            parameters=["-acodec", "pcm_s16le"]
-        )
-
-        wav_io.seek(0)
+        output.seek(0)
 
         st.success("✅ Episode Generated Successfully!")
 
         st.download_button(
-            label="⬇ Download Episode",
-            data=wav_io,
+            "⬇ Download Episode",
+            data=output,
             file_name="vobble_episode.wav",
             mime="audio/wav"
         )
