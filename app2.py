@@ -104,8 +104,7 @@ def generate_audio(text, voice_id, voice_settings):
     headers = {
         "xi-api-key": API_KEY,
         "Content-Type": "application/json"
-}
-    }
+        }
 
     data = {
         "text": text,
@@ -247,4 +246,5 @@ if uploaded_file:
             file_name="vobble_episode.wav",
             mime="audio/wav"
         )
+
 
