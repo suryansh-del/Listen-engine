@@ -43,6 +43,37 @@ GAP_SAME_SPEAKER_MS = 400
 GAP_SPEAKER_CHANGE_MS = 800
 
 # =============================
+# VOICE TYPE PROFILES
+# =============================
+
+VOICE_TYPE_PROFILES = {
+    "adult_male": {
+        "stability": 0.50,
+        "similarity_boost": 0.88,
+        "style": 0.75,
+        "use_speaker_boost": True
+    },
+    "adult_female": {
+        "stability": 0.5,
+        "similarity_boost": 0.90,
+        "style": 0.80,
+        "use_speaker_boost": True
+    },
+    "male_kid": {
+        "stability": 0.5,
+        "similarity_boost": 0.80,
+        "style": 0.90,
+        "use_speaker_boost": True
+    },
+    "female_kid": {
+        "stability": 0.5,
+        "similarity_boost": 0.78,
+        "style": 0.95,
+        "use_speaker_boost": False
+    }
+}
+
+# =============================
 # UTILITIES
 # =============================
 
@@ -51,8 +82,7 @@ def normalize_name(name):
 
 def detect_characters(script_text):
     characters = set()
-    lines = script_text.split("\n")
-    for line in lines:
+    for line in script_text.split("\n"):
         if ":" in line:
             speaker = line.split(":", 1)[0].strip()
             if speaker:
@@ -108,12 +138,22 @@ if uploaded_file:
     st.subheader("🎭 Character Setup")
 
     voice_map = {}
+    voice_profiles = {}
 
     for character in characters:
         st.markdown(f"### {character}")
-        voice_id = st.text_input(f"Voice ID for {character}", key=character)
+
+        voice_id = st.text_input(f"Voice ID for {character}", key=f"{character}_voice")
+
+        voice_type = st.selectbox(
+            f"Voice Type for {character}",
+            ["adult_male", "adult_female", "male_kid", "female_kid"],
+            key=f"{character}_type"
+        )
+
         if voice_id:
             voice_map[character] = voice_id
+            voice_profiles[character] = VOICE_TYPE_PROFILES[voice_type]
 
     if st.button("🎬 Generate Episode"):
 
@@ -142,10 +182,7 @@ if uploaded_file:
             audio_bytes = generate_audio(
                 dialogue,
                 voice_map[speaker],
-                {
-                    "stability": 0.5,
-                    "similarity_boost": 0.85
-                }
+                voice_profiles[speaker]
             )
 
             if not audio_bytes:
@@ -178,10 +215,12 @@ if uploaded_file:
 
                 if i > 0:
                     prev_speaker = wav_segments[i - 1][0]
+
                     if prev_speaker == speaker:
                         silence = create_silence(GAP_SAME_SPEAKER_MS, audio_params)
                     else:
                         silence = create_silence(GAP_SPEAKER_CHANGE_MS, audio_params)
+
                     out.writeframes(silence)
 
                 out.writeframes(frames)
