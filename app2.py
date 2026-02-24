@@ -33,11 +33,20 @@ if not st.session_state.logged_in:
     st.stop()
 
 # =============================
-# CONFIG
+# API KEY CHECK
 # =============================
 
-API_KEY = st.secrets["API_KEY"]
+API_KEY = st.secrets.get("API_KEY")
+
+if not API_KEY:
+    st.error("❌ API_KEY not found in Streamlit Secrets.")
+    st.stop()
+
 MODEL_ID = "eleven_v3"
+
+# =============================
+# TIMING CONFIG
+# =============================
 
 GAP_SAME_SPEAKER_MS = 400
 GAP_SPEAKER_CHANGE_MS = 800
@@ -93,7 +102,7 @@ def generate_audio(text, voice_id, voice_settings):
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}?output_format=wav_44100"
 
     headers = {
-        "xi-api-key": API_KEY,
+        "Authorization": f"Bearer {API_KEY}",
         "Content-Type": "application/json"
     }
 
@@ -143,7 +152,10 @@ if uploaded_file:
     for character in characters:
         st.markdown(f"### {character}")
 
-        voice_id = st.text_input(f"Voice ID for {character}", key=f"{character}_voice")
+        voice_id = st.text_input(
+            f"Voice ID for {character}",
+            key=f"{character}_voice"
+        )
 
         voice_type = st.selectbox(
             f"Voice Type for {character}",
@@ -164,7 +176,6 @@ if uploaded_file:
         lines = script_text.split("\n")
 
         wav_segments = []
-        prev_speaker = None
         audio_params = None
 
         for raw in lines:
