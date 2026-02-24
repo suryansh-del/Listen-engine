@@ -102,8 +102,9 @@ def generate_audio(text, voice_id, voice_settings):
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}?output_format=wav_44100"
 
     headers = {
-        "Authorization": f"Bearer {API_KEY}",
+        "xi-api-key": API_KEY,
         "Content-Type": "application/json"
+}
     }
 
     data = {
@@ -246,3 +247,4 @@ if uploaded_file:
             file_name="vobble_episode.wav",
             mime="audio/wav"
         )
+
