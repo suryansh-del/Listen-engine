@@ -55,7 +55,7 @@ CLIP_TAIL_PAD_MS = 60
 # =============================
 
 VOICE_TYPE_PROFILES = {
-    "adult_male": {"stability": 0.0, "similarity_boost": 0.88, "style": 0.75, "use_speaker_boost": True},
+    "adult_male": {"stability": 0.50, "similarity_boost": 0.88, "style": 0.95, "use_speaker_boost": True},
     "adult_female": {"stability": 0.50, "similarity_boost": 0.90, "style": 0.80, "use_speaker_boost": True},
     "male_kid": {"stability": 0.50, "similarity_boost": 0.80, "style": 0.90, "use_speaker_boost": True},
     "female_kid": {"stability": 0.50, "similarity_boost": 0.78, "style": 0.95, "use_speaker_boost": False},
