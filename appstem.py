@@ -11,7 +11,13 @@ from pydub import AudioSegment
 
 USERS = {
     "Tejas": "Vobble123",
-    "Suryansh": "Vobble123"
+    "Suryansh": "Vobble123",
+    "Rohil": "Vobble123",
+    "Saidutt": "Vobble123",
+    "Danny": "Vobble123",
+    "Ryan": "Vobble123",
+    "Nischay": "Vobble123",
+    "Yatharth": "Vobble123",
 }
 
 if "logged_in" not in st.session_state:
