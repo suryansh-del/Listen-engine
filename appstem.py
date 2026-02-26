@@ -24,7 +24,7 @@ if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 
 if not st.session_state.logged_in:
-    st.title("🎙 Vobble Audio Studio Login")
+    st.title("🎙 Vobble Listen engine Audio Team Login")
 
     username = st.text_input("Name")
     password = st.text_input("Password", type="password")
