@@ -55,30 +55,10 @@ CLIP_TAIL_PAD_MS = 120
 # =============================
 
 VOICE_TYPE_PROFILES = {
-    "adult_male": {
-        "stability": 0.50,
-        "similarity_boost": 0.88,
-        "style": 0.75,
-        "use_speaker_boost": True
-    },
-    "adult_female": {
-        "stability": 0.5,
-        "similarity_boost": 0.90,
-        "style": 0.80,
-        "use_speaker_boost": True
-    },
-    "male_kid": {
-        "stability": 0.5,
-        "similarity_boost": 0.80,
-        "style": 0.90,
-        "use_speaker_boost": True
-    },
-    "female_kid": {
-        "stability": 0.5,
-        "similarity_boost": 0.78,
-        "style": 0.95,
-        "use_speaker_boost": False
-    }
+    "adult_male": {"stability": 0.50, "similarity_boost": 0.88, "style": 0.75, "use_speaker_boost": True},
+    "adult_female": {"stability": 0.50, "similarity_boost": 0.90, "style": 0.80, "use_speaker_boost": True},
+    "male_kid": {"stability": 0.50, "similarity_boost": 0.80, "style": 0.90, "use_speaker_boost": True},
+    "female_kid": {"stability": 0.50, "similarity_boost": 0.78, "style": 0.95, "use_speaker_boost": False},
 }
 
 # =============================
@@ -88,22 +68,85 @@ VOICE_TYPE_PROFILES = {
 def normalize_name(name: str) -> str:
     return name.strip().lower()
 
-def detect_characters(script_text: str):
-    characters = set()
-    lines = script_text.split("\n")
+def safe_filename(name: str) -> str:
+    return re.sub(r"[^a-z0-9_\-]+", "_", name.lower()).strip("_")
 
-    for line in lines:
-        line = line.strip()
-        if ":" in line:
-            speaker = line.split(":", 1)[0].strip()
-            if speaker:
-                characters.add(normalize_name(speaker))
+def is_sfx_or_music_line(line: str) -> bool:
+    # remove production cues
+    l = line.strip().lower()
+    return l.startswith("sfx:") or l.startswith("music:")
 
-    return sorted(list(characters))
+def parse_script_blocks(script_text: str):
+    """
+    Supports BOTH:
+    1) single-line: name: dialogue
+    2) block format:
+       name:
+       [tag...]
+       dialogue line 1
+       dialogue line 2
+       (blank or next name:)
+    Returns list of tuples: (speaker, dialogue_text)
+    """
+    lines = script_text.splitlines()
+    items = []
 
-# NOTE: You said you do NOT want internal pause tags for ElevenLabs-tag scripts,
-# but this app uses ensure_line_tail to stabilize TTS cadence.
-# This only appends "[short pause]" if missing and strips unknown bracket tags.
+    current_speaker = None
+    current_dialogue_lines = []
+
+    def flush():
+        nonlocal current_speaker, current_dialogue_lines
+        if current_speaker and current_dialogue_lines:
+            # join multiple dialogue lines into one TTS chunk
+            dialogue = " ".join([x.strip() for x in current_dialogue_lines if x.strip()])
+            if dialogue.strip():
+                items.append((current_speaker, dialogue.strip()))
+        current_dialogue_lines = []
+
+    speaker_line_re = re.compile(r"^\s*([^:]{1,60})\s*:\s*(.*)$")  # speaker: (maybe dialogue)
+
+    for raw in lines:
+        line = raw.rstrip("\n")
+        stripped = line.strip()
+
+        if not stripped:
+            # blank line ends current block dialogue chunk
+            flush()
+            continue
+
+        if is_sfx_or_music_line(stripped):
+            continue
+
+        # ignore pure bracket performance direction lines like [warm, loud]
+        if stripped.startswith("[") and stripped.endswith("]"):
+            continue
+
+        m = speaker_line_re.match(line)
+        if m:
+            speaker = normalize_name(m.group(1))
+            after = (m.group(2) or "").strip()
+
+            # new speaker begins -> flush previous
+            flush()
+            current_speaker = speaker
+
+            # if same-line dialogue exists: take it
+            if after:
+                current_dialogue_lines.append(after)
+            continue
+
+        # normal dialogue line (belongs to current speaker)
+        if current_speaker:
+            current_dialogue_lines.append(stripped)
+
+    flush()
+    return items
+
+def detect_characters_from_blocks(items):
+    chars = sorted(list({sp for sp, _ in items}))
+    return chars
+
+# Keep your existing cadence stabilizer (unchanged)
 ALLOWED_PAUSE_TAGS = {"[pause]", "[short pause]", "[long pause]"}
 
 def strip_unknown_brackets(s: str) -> str:
@@ -116,19 +159,14 @@ def ensure_line_tail(text: str) -> str:
     t = strip_unknown_brackets(text.strip())
     if not t:
         return t
-
     if not re.search(r"(\[short pause\]|\[pause\]|\[long pause\])\s*$", t):
         if not t.endswith((".", "!", "?", ",")):
             t += "."
         t += " [short pause]"
-
     return t
 
-def safe_filename(name: str) -> str:
-    return re.sub(r"[^a-z0-9_\-]+", "_", name.lower()).strip("_")
-
 # =============================
-# AUDIO GENERATION
+# AUDIO GENERATION (AI)
 # =============================
 
 def generate_audio(text, voice_id, voice_settings):
@@ -136,7 +174,7 @@ def generate_audio(text, voice_id, voice_settings):
     if not t:
         return None
 
-    # ✅ Use MP3 output (more widely supported across ElevenLabs plans)
+    # MP3 output is widely supported; we export WAV later
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}?output_format=mp3_44100_128"
 
     headers = {
@@ -152,7 +190,7 @@ def generate_audio(text, voice_id, voice_settings):
     }
 
     response = None
-    for attempt in range(RETRIES):
+    for _ in range(RETRIES):
         try:
             response = requests.post(url, json=data, headers=headers, timeout=TIMEOUT_SEC)
             if response.status_code == 200 and response.content:
@@ -166,12 +204,9 @@ def generate_audio(text, voice_id, voice_settings):
         st.error(f"API Error {response.status_code}: {response.text}")
         return None
 
-    # Load MP3, then we export WAV later
     audio = AudioSegment.from_file(io.BytesIO(response.content), format="mp3")
-
     audio = audio.fade_in(CLIP_FADE_IN_MS).fade_out(CLIP_FADE_OUT_MS)
     audio += AudioSegment.silent(duration=CLIP_TAIL_PAD_MS)
-
     return audio
 
 # =============================
@@ -183,12 +218,13 @@ st.title("🎙 Vobble Audio Studio")
 uploaded_file = st.file_uploader("Upload Script (.txt)", type=["txt"])
 
 if uploaded_file:
-
     script_text = uploaded_file.read().decode("utf-8")
-    characters = detect_characters(script_text)
 
-    if not characters:
-        st.warning("No characters detected. Use format: Name: dialogue")
+    parsed_items = parse_script_blocks(script_text)  # NEW
+    characters = detect_characters_from_blocks(parsed_items)
+
+    if not parsed_items or not characters:
+        st.warning("No dialogue detected. Use either 'name: dialogue' OR block format 'name:' then dialogue lines.")
         st.stop()
 
     st.subheader("🎭 Character Setup")
@@ -199,10 +235,7 @@ if uploaded_file:
     for character in characters:
         st.markdown(f"### {character}")
 
-        voice_id = st.text_input(
-            f"Voice ID for {character}",
-            key=f"{character}_voice"
-        )
+        voice_id = st.text_input(f"Voice ID for {character}", key=f"{character}_voice")
 
         voice_type = st.selectbox(
             f"Voice Type for {character}",
@@ -211,7 +244,7 @@ if uploaded_file:
         )
 
         if voice_id:
-            voice_map[character] = voice_id
+            voice_map[character] = voice_id.strip()
             voice_profiles[character] = VOICE_TYPE_PROFILES[voice_type]
 
     if st.button("🎬 Generate Episode"):
@@ -220,51 +253,29 @@ if uploaded_file:
             st.error("Please assign Voice ID for all characters.")
             st.stop()
 
-        # -----------------------------
         # Build BOTH: full mix + stems
-        # -----------------------------
         final_audio = AudioSegment.empty()
-        character_tracks = {char: AudioSegment.silent(duration=0) for char in characters}
+        character_tracks = {ch: AudioSegment.silent(duration=0) for ch in characters}
 
-        timeline_position = 0  # ms
+        timeline_position = 0
         last_speaker = None
 
-        lines = script_text.split("\n")
-
         progress = st.progress(0)
-        total_lines = len(lines)
+        total_lines = len(parsed_items)
         processed = 0
 
-        for raw in lines:
-            line = raw.strip()
+        for speaker, dialogue in parsed_items:
             processed += 1
             progress.progress(processed / total_lines)
-
-            if not line:
-                continue
-
-            if ":" not in line:
-                continue
-
-            speaker_part, dialogue = line.split(":", 1)
-            speaker = normalize_name(speaker_part)
-            dialogue = dialogue.strip()
 
             if speaker not in voice_map:
                 continue
 
-            audio = generate_audio(
-                dialogue,
-                voice_map[speaker],
-                voice_profiles[speaker]
-            )
-
+            audio = generate_audio(dialogue, voice_map[speaker], voice_profiles[speaker])
             if not audio:
                 continue
 
-            # -----------------------------
-            # Apply GAP consistently to mix + all stems
-            # -----------------------------
+            # GAP (consistent)
             gap = 0
             if last_speaker is not None:
                 gap = GAP_SAME_SPEAKER_MS if last_speaker == speaker else GAP_SPEAKER_CHANGE_MS
@@ -275,20 +286,15 @@ if uploaded_file:
                     character_tracks[ch] += AudioSegment.silent(duration=gap)
                 timeline_position += gap
 
-            # -----------------------------
-            # FULL MIX: append speech
-            # -----------------------------
+            # FULL MIX
             if len(final_audio) == 0:
                 final_audio = audio
             else:
                 final_audio = final_audio.append(audio, crossfade=CROSSFADE_MS)
 
-            # -----------------------------
-            # STEMS: audio only on speaker track, silence elsewhere
-            # -----------------------------
+            # STEMS
             duration = len(audio)
 
-            # alignment safety (should already match, but keep it robust)
             for ch in character_tracks:
                 if len(character_tracks[ch]) < timeline_position:
                     character_tracks[ch] += AudioSegment.silent(duration=timeline_position - len(character_tracks[ch]))
@@ -302,22 +308,17 @@ if uploaded_file:
             last_speaker = speaker
 
         if len(final_audio) == 0:
-            st.error("No audio was generated. Please check Voice IDs and script format (name: dialogue).")
+            st.error("No audio was generated. Check: Voice IDs are valid + script has dialogue under each speaker.")
             st.stop()
 
-        # -----------------------------
         # ZIP: full mix + stems
-        # -----------------------------
         zip_buffer = io.BytesIO()
-
         with zipfile.ZipFile(zip_buffer, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-            # Full episode wav
             full_wav = io.BytesIO()
             final_audio.export(full_wav, format="wav", parameters=["-acodec", "pcm_s16le"])
             full_wav.seek(0)
             zf.writestr("vobble_episode_full.wav", full_wav.read())
 
-            # Stems wavs (same length)
             for ch, track in character_tracks.items():
                 if len(track) < len(final_audio):
                     track += AudioSegment.silent(duration=len(final_audio) - len(track))
@@ -327,13 +328,11 @@ if uploaded_file:
                 stem_wav = io.BytesIO()
                 track.export(stem_wav, format="wav", parameters=["-acodec", "pcm_s16le"])
                 stem_wav.seek(0)
-
                 zf.writestr(f"stems/{safe_filename(ch)}_stem.wav", stem_wav.read())
 
         zip_buffer.seek(0)
 
         st.success("✅ Episode + stems generated!")
-
         st.download_button(
             label="⬇ download episode + stems (zip)",
             data=zip_buffer,
