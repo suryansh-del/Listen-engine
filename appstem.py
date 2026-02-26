@@ -43,19 +43,19 @@ RETRIES = 3
 TIMEOUT_SEC = 30
 
 CROSSFADE_MS = 0
-GAP_SAME_SPEAKER_MS = 400
-GAP_SPEAKER_CHANGE_MS = 800
+GAP_SAME_SPEAKER_MS = 200
+GAP_SPEAKER_CHANGE_MS = 200
 
 CLIP_FADE_IN_MS = 20
 CLIP_FADE_OUT_MS = 40
-CLIP_TAIL_PAD_MS = 120
+CLIP_TAIL_PAD_MS = 60
 
 # =============================
 # VOICE TYPE PROFILES
 # =============================
 
 VOICE_TYPE_PROFILES = {
-    "adult_male": {"stability": 0.50, "similarity_boost": 0.88, "style": 0.75, "use_speaker_boost": True},
+    "adult_male": {"stability": 0.0, "similarity_boost": 0.88, "style": 0.75, "use_speaker_boost": True},
     "adult_female": {"stability": 0.50, "similarity_boost": 0.90, "style": 0.80, "use_speaker_boost": True},
     "male_kid": {"stability": 0.50, "similarity_boost": 0.80, "style": 0.90, "use_speaker_boost": True},
     "female_kid": {"stability": 0.50, "similarity_boost": 0.78, "style": 0.95, "use_speaker_boost": False},
